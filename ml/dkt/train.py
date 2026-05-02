@@ -4,18 +4,18 @@ import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
 from torch.amp import autocast, GradScaler
 from sklearn.metrics import roc_auc_score
-from model import DKT
+from model import SAKT
 
-def train_dkt():
+def train_sakt():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
     # Hyperparameters
-    batch_size = 256
-    n_epochs = 20
-    lr = 3e-4
+    batch_size = 512
+    n_epochs = 30
+    lr = 5e-4
     weight_decay = 1e-2
-    patience = 3
+    patience = 5
     data_dir = "../../data/processed"
 
     print("Loading data...")
@@ -33,8 +33,9 @@ def train_dkt():
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
     val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
 
-    model = DKT(n_questions=n_questions).to(device)
+    model = SAKT(n_questions=n_questions).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=n_epochs)
     
     # Use reduction='none' because we need to ignore padding (-1s) via a mask
     criterion = nn.BCELoss(reduction='none')
@@ -62,21 +63,31 @@ def train_dkt():
                 preds_subset = preds[:, :-1, :]
                 
                 # Check where targets are valid
-                mask = (a_target != -1)
+                mask = (a_target != -1) & (q_target > 0)
                 
                 # Gather the predicted prob for the specific target question IDs asked at t+1
                 # Because q_target values represent column indices. Unpack output using gather.
                 gathered_preds = torch.gather(preds_subset, 2, q_target.unsqueeze(2)).squeeze(2)
                 
                 # Apply BCE loss on valid targets
-                loss_unreduced = criterion(gathered_preds[mask], a_target[mask])
+                valid_preds = gathered_preds[mask]
+                valid_targets = a_target[mask]
+                
+                loss_unreduced = criterion(valid_preds, valid_targets)
                 loss = loss_unreduced.mean()
                 
             scaler.scale(loss).backward()
+            
+            # Gradient clipping
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            
             scaler.step(optimizer)
             scaler.update()
             
             total_loss += loss.item() * q_batch.size(0)
+        
+        scheduler.step()
             
         train_loss = total_loss / len(train_dataset)
 
@@ -96,23 +107,27 @@ def train_dkt():
                 q_target = q_batch[:, 1:].clone().long()
                 a_target = a_batch[:, 1:].clone()
                 preds_subset = preds[:, :-1, :]
-                mask = (a_target != -1)
+                mask = (a_target != -1) & (q_target > 0)
                 
                 gathered_preds = torch.gather(preds_subset, 2, q_target.unsqueeze(2)).squeeze(2)
                 
+                valid_preds = gathered_preds[mask]
+                valid_targets = a_target[mask]
+                
                 # Collect predictions and valid targets to compute ROC AUC
-                val_preds_all.extend(gathered_preds[mask].cpu().numpy())
-                val_targets_all.extend(a_target[mask].cpu().numpy())
+                val_preds_all.extend(valid_preds.cpu().numpy())
+                val_targets_all.extend(valid_targets.cpu().numpy())
                 
         # Calculate Validation AUC-ROC
         val_auc = roc_auc_score(val_targets_all, val_preds_all)
+
         
         print(f"Epoch {epoch+1:02d}/{n_epochs} | Loss: {train_loss:.4f} | Val AUC-ROC: {val_auc:.4f}")
         
         # Early Stopping and Checkpoint saving
         if val_auc > best_val_auc:
             best_val_auc = val_auc
-            torch.save(model.state_dict(), "dkt_best.pt")
+            torch.save(model.state_dict(), "sakt_best.pt")
             epochs_no_improve = 0
             print(f"  --> Saved new best model with Val AUC: {best_val_auc:.4f}")
         else:
@@ -123,4 +138,4 @@ def train_dkt():
                 break
 
 if __name__ == "__main__":
-    train_dkt()
+    train_sakt()
