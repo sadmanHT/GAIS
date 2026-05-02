@@ -4,7 +4,7 @@ import torch
 from torch.nn.utils.rnn import pad_sequence
 from sklearn.model_selection import train_test_split
 
-def process_data(input_csv="train.csv", output_dir="../../data/processed", max_seq_len=200, max_rows=2000000):
+def process_data(input_csv="train.csv", output_dir="../../data/processed", max_seq_len=200, max_rows=5000000):
     print(f"Loading data from {input_csv} (max {max_rows} rows)...")
     # Load dataset
     df = pd.read_csv(input_csv, nrows=max_rows)
